@@ -1,0 +1,215 @@
+#include <MQ135.h>
+#include <Wire.h>
+#include <Adafruit_Sensor.h>
+#include <Adafruit_ADXL345_U.h>
+#include <SoftwareSerial.h>
+
+SoftwareSerial mySerial(6, 11); // SIM800L Tx & Rx connected to Arduino #6 & #11
+#define PIN_MQ135 A0
+MQ135 mq135_sensor(PIN_MQ135);
+Adafruit_ADXL345_Unified accel = Adafruit_ADXL345_Unified();  
+
+
+//digital pins            
+int ledPinCalibrate= 5;  // Green LED 
+//int ledPinMicro= 5;  // Red LED
+int ledPinPir = 9;  // Blue LED
+int ledPinGAS = 3;  // Red LED     
+int ledPinEQ = 8;  // Yellow LED
+int microwavePin = 10; 
+int pirPin = 12;
+int buzzer = 2;
+
+//variables    
+int motionState = LOW; 
+int micro = 0;  
+int pir = 0;                 
+int calibrationTime = 30;
+int doCalibrate = 1;
+float fix_magnitude = 0;
+float fix_ppm = 0;
+sensors_event_t val;
+
+
+void setup() {
+  accel.begin();
+  pinMode(ledPinCalibrate, OUTPUT); 
+  pinMode(ledPinPir, OUTPUT);        
+  pinMode(ledPinGAS, OUTPUT);
+  pinMode(ledPinEQ, OUTPUT);
+  pinMode(microwavePin, INPUT); 
+  pinMode(buzzer, OUTPUT);
+  digitalWrite(pirPin, LOW);
+  accel.setRange(ADXL345_RANGE_16_G);
+  Serial.begin(9600);
+  mySerial.begin(9600);
+  Serial.println("SIM Module Initializing");
+  delay(1000);
+  mySerial.println("AT");
+  updateSerial();
+  mySerial.println("AT+CMGF=1");
+  updateSerial();
+}
+
+void updateSerial() {
+  delay(500);
+  while (Serial.available()) {
+    mySerial.write(Serial.read());
+  }
+  while (mySerial.available()) {
+    Serial.write(mySerial.read());
+  }
+}
+
+void sendMessage(const char* message) {
+  mySerial.println("AT+CMGS=\"+8801852810143\"");
+  updateSerial();
+  mySerial.print(message);
+  updateSerial();
+  mySerial.write(26); // Send Ctrl+Z to indicate the end of the message
+}
+
+void calibration(){
+    //give the sensor some time to calibrate
+  Serial.println("Calibrating Sensors");
+    for(int i = 0; i < calibrationTime; i++){
+      Serial.print(i);
+      Serial.print("/");
+      Serial.println(calibrationTime);
+      delay(1000);
+
+      // calibrating accelerometer
+      accel.getEvent(&val);
+      float x = val.acceleration.x;
+      float y = val.acceleration.y;
+      float z = val.acceleration.z;
+      float magnitude = sqrt(x * x + y * y + z * z);
+      fix_magnitude+=magnitude;
+      
+      // calibrating gas sensor
+      float ppm = mq135_sensor.getPPM();
+      fix_ppm+=ppm;
+
+      // calibrating motion
+      micro = digitalRead(microwavePin);
+      pir = digitalRead(pirPin);
+      }
+    fix_magnitude /= calibrationTime;
+    fix_ppm /= calibrationTime;
+
+    Serial.println("Done");
+    Serial.print("Fixed Magnitude: ");
+    Serial.println(fix_magnitude);
+    Serial.print("Fixed Gas PPM: ");
+    Serial.println(fix_ppm);
+    digitalWrite(ledPinCalibrate, HIGH);
+    delay(100);
+    digitalWrite(ledPinCalibrate, LOW);
+    delay(100);
+    digitalWrite(ledPinCalibrate, HIGH);
+    delay(100);
+    digitalWrite(ledPinCalibrate, LOW);
+    delay(100);
+    digitalWrite(ledPinCalibrate, HIGH);
+    delay(100);
+    digitalWrite(ledPinCalibrate, LOW);
+    delay(100);
+}
+
+void readMotionSensor(){
+  readPIRSensor();
+  readMicrowaveSensor();
+  if ((pir == HIGH) && (micro == HIGH)){
+    digitalWrite(ledPinPir, HIGH);
+    Serial.println("Motion detected!");
+    sendMessage("Alert: INTRUDER DETECTED!");
+    digitalWrite(buzzer, HIGH);
+    delay(2000);
+  }
+  else{
+    digitalWrite(ledPinPir, LOW);
+    digitalWrite(buzzer, LOW);
+  }
+}
+
+void readPIRSensor(){
+  pir = digitalRead(pirPin);
+  if (pir == HIGH){
+    //Serial.println("PIR!");
+    //digitalWrite(ledPinPir, HIGH);
+  }
+  else{
+    //digitalWrite(ledPinPir, LOW);
+  }
+  
+  //delay(500);
+}
+
+void readMicrowaveSensor() {
+  micro = digitalRead(microwavePin);  // read input value
+  //delay(1000);
+  if (micro == HIGH) {  // check if the input is HIGH
+    //digitalWrite(ledPinMicro, HIGH);  // turn LED ON
+    if (motionState == LOW) {
+      //Serial.println("Microwave!"); 
+      motionState = HIGH;
+    }
+  } 
+  else {
+    //digitalWrite(ledPinMicro, LOW); // turn LED OFF
+    if (motionState == HIGH) {
+      motionState = LOW;
+    }
+  } 
+}
+
+void readADXL345() {
+  sensors_event_t event;
+  accel.getEvent(&event);
+  // Read accelerometer values
+  float x = event.acceleration.x;
+  float y = event.acceleration.y;
+  float z = event.acceleration.z;
+  float magnitude = sqrt(x * x + y * y + z * z);  // Calculate the total acceleration magnitude
+  //Serial.println(magnitude);
+  //delay(1000);
+  //Check if earthquake threshold is exceeded (adjust the threshold value as needed)
+  if (magnitude > (fix_magnitude + 0.4) || magnitude < (fix_magnitude - 0.4)) {
+    digitalWrite(ledPinEQ, HIGH); // Turn on the Orange LED
+    Serial.println("Earthquake detected!");
+    sendMessage("Alert: EARTHQUAKE DETECTED!");
+    digitalWrite(buzzer, HIGH);
+    delay(2000);
+  } else {
+    digitalWrite(ledPinEQ, LOW);
+    digitalWrite(buzzer, LOW);    
+  }
+  
+}
+
+void readGasSensor() {
+  float ppm = mq135_sensor.getPPM();
+  //Serial.print("\t PPM: ");
+  //Serial.println(ppm);
+  if (ppm > (fix_ppm + 1000)) {
+    digitalWrite(ledPinGAS, HIGH);  // Turn on the Green LED
+    digitalWrite(buzzer, HIGH);
+    Serial.println("Gas/Smoke detected!");
+    sendMessage("Alert: HIGH LEVEL OF TOXIC GAS DETECTED!");
+    //Serial.println(ppm);
+    delay(2000);
+  } else {
+    digitalWrite(ledPinGAS, LOW);   
+    digitalWrite(buzzer, LOW);
+  }
+}
+
+void loop() {
+  if (doCalibrate == 1){
+    calibration();
+    doCalibrate = 0;
+  }
+  readMotionSensor();
+  readADXL345();
+  readGasSensor();
+}
